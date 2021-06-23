@@ -1,27 +1,64 @@
 mod wireguard_conf;
+mod api;
+mod error;
 
-use clap::{crate_version, App, Arg, SubCommand};
-use warp::Filter;
+use clap::{crate_version, App, Arg};
+use std::{net::Ipv4Addr, path::PathBuf};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = App::new("wireguard-rest-api-rs")
         .version(crate_version!())
         .author("Niedźwiedź <wojciech.brozek@niedzwiedz.it>")
         .about("Wireguard config modified via REST API")
         .arg(
-            Arg::with_name("token")
+            Arg::new("token")
                 .long("token")
                 .value_name("STRING")
-                .help("secret token used to authenticate actions")
+                .about("secret token used to authenticate actions")
+                .takes_value(true)
+                .required(true)
+        )
+        .arg(
+            Arg::new("port")
+                .long("port")
+                .value_name("NUMBER")
+                .about("port to serve the API over")
+                .takes_value(true)
+                .required(true)
+        )
+        .arg(
+            Arg::new("file_path")
+                .long("file_path")
+                .value_name("FILE")
+                .about("config path to modify")
+                .takes_value(true)
+                .required(true)
+        )
+        .arg(
+            Arg::new("host")
+                .long("host")
+                .value_name("IP")
+                .about("IP to serve the API over")
                 .takes_value(true)
                 .required(true)
         )
         .get_matches();
 
     let token = matches.value_of("token").expect("token must be set");
-    println!("TOKEN: {}", token);
-    let hello = warp::path!("hello" / String).map(|name| format!("Hello, {}!", name));
+    let port = matches.value_of_t("port")?;
+    let host: Ipv4Addr = matches.value_of_t("host")?;
+    let file_path: std::path::PathBuf = matches.value_of_t("file_path")?;
 
-    warp::serve(hello).run(([127, 0, 0, 1], 3030)).await;
+    if !file_path.exists() {
+        panic!(" :: file does not exist : [{:#?}] ::", file_path);
+    }
+    eprintln!(" :: token:      {}", token);
+    eprintln!(" :: host:       {}", host);
+    eprintln!(" :: port:       {}", port);
+    eprintln!(" :: file_path:  {:?}", file_path);
+    eprintln!(" :: igniting ::");
+    warp::serve(api::api(PathBuf::from("/etc/wireguard/wg0.conf"), token.to_string())).run((host, port)).await;
+
+    Ok(())
 }

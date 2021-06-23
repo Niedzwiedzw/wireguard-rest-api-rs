@@ -1,8 +1,7 @@
-use anyhow::Result;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub enum WireguardEntryType {
     Interface,
     Peer,
@@ -17,10 +16,16 @@ impl WireguardEntryType {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone)]
 pub struct WireguardEntry {
-    kind: WireguardEntryType,
-    values: IndexMap<String, String>,
+    pub kind: WireguardEntryType,
+    pub values: IndexMap<String, String>,
+}
+
+impl std::fmt::Display for WireguardEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#?}", self)
+    }
 }
 
 impl WireguardEntry {
@@ -40,8 +45,8 @@ impl WireguardEntry {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct WireguardConfig(IndexMap<usize, WireguardEntry>);
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireguardConfig(pub IndexMap<usize, WireguardEntry>);
 
 impl WireguardConfig {
     pub fn to_string(&self) -> String {
