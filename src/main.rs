@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(" :: port:       {}", port);
     eprintln!(" :: file_path:  {:?}", file_path);
     eprintln!(" :: igniting ::");
-    warp::serve(api::api(PathBuf::from("/etc/wireguard/wg0.conf"), token.to_string())).run((host, port)).await;
+    warp::serve(api::api(PathBuf::from(file_path), token.to_string())).run((host, port)).await;
 
     Ok(())
 }

@@ -212,6 +212,7 @@ pub mod handlers {
             )))
         }
         let entry = config.0.insert(config.0.len(), create);
+        or_error!(std::fs::write(&file_path, &config.to_string()));
 
         Ok(warp::reply::with_status(
             warp::reply::json(&entry),
