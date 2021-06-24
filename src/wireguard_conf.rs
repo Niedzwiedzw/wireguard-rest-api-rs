@@ -73,6 +73,7 @@ pub mod parser {
         let is_newline = |c: char| c == '\n';
         let non_whitespaces = take_till1(|c: char| c.is_whitespace());
         let newlines = take_while1(is_newline);
+        let non_newlines = take_while1(|c| !is_newline(c));
 
         let header = alt((
             value(WireguardEntryType::Peer, tag("[Peer]")),
@@ -86,7 +87,7 @@ pub mod parser {
                 tag("="),
                 take_while(char::is_whitespace),
             ),
-            &non_whitespaces,
+            &non_newlines,
         ));
 
         let keyvalues = separated_list0(&newlines, keyvalue);
@@ -136,6 +137,18 @@ PersistentKeepAlive = 15"#;
     #[test]
     fn test_example_config_parsing() {
         let conf = include_str!("../test-client-config.conf");
+        let (_input, wg) = WireguardConfig::from_str(conf).expect("bad format");
+        println!(
+            " :: PARSED CONFIG :: \n{}",
+            serde_json::to_string_pretty(&wg).unwrap()
+        );
+
+        assert_eq!(conf, &wg.to_string())
+    }
+
+    #[test]
+    fn test_complex_config_parsing() {
+        let conf = include_str!("../test-wg0-complex.conf");
         let (_input, wg) = WireguardConfig::from_str(conf).expect("bad format");
         println!(
             " :: PARSED CONFIG :: \n{}",

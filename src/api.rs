@@ -137,7 +137,10 @@ pub mod handlers {
     fn read_config<T: AsRef<std::path::Path>>(
         file_path: T,
     ) -> Result<WireguardConfig, WireguardRestApiError> {
-        let text = std::fs::read_to_string(&file_path)?;
+        let mut text: String = std::fs::read_to_string(&file_path)?;
+        if !text.ends_with("\n") {
+            text.push('\n');
+        }
         let parse = WireguardConfig::from_str(&text);
         match parse {
             Ok((_, config)) => Ok(config),
