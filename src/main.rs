@@ -3,10 +3,12 @@ mod api;
 mod error;
 
 use clap::{crate_version, App, Arg};
+use warp::Filter;
 use std::{net::Ipv4Addr, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    pretty_env_logger::init();
     let matches = App::new("wireguard-rest-api-rs")
         .version(crate_version!())
         .author("Niedźwiedź <wojciech.brozek@niedzwiedz.it>")
@@ -58,7 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(" :: port:       {}", port);
     eprintln!(" :: file_path:  {:?}", file_path);
     eprintln!(" :: igniting ::");
-    warp::serve(api::api(PathBuf::from(file_path), token.to_string())).run((host, port)).await;
+    warp::serve(
+        api::api(
+            PathBuf::from(file_path),
+            token.to_string(),
+        ).with(warp::log("HTTP-API")),
+    ).run((host, port)).await;
 
     Ok(())
 }

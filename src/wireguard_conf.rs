@@ -20,6 +20,8 @@ impl WireguardEntryType {
 pub struct WireguardEntry {
     pub kind: WireguardEntryType,
     pub values: IndexMap<String, String>,
+    #[serde(default)]
+    pub extra_metadata: IndexMap<String, String>,
 }
 
 impl std::fmt::Display for WireguardEntry {
@@ -31,7 +33,7 @@ impl std::fmt::Display for WireguardEntry {
 impl WireguardEntry {
     pub fn to_string(&self) -> String {
         format!(
-            r#"[{header}]
+            r#"{extra_metadata}[{header}]
 {values}
 "#,
             header = self.kind.to_string(),
@@ -41,6 +43,18 @@ impl WireguardEntry {
                 .map(|(key, value)| format!("{} = {}", key, value))
                 .collect::<Vec<_>>()
                 .join("\n"),
+            extra_metadata = if self.extra_metadata.len() == 0 {
+                "".to_string()
+            } else {
+                format!(
+                    "{}\n",
+                    self.extra_metadata
+                        .iter()
+                        .map(|(key, value)| format!("## {} = {}", key, value))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            },
         )
     }
 }
@@ -63,45 +77,82 @@ pub mod parser {
     use nom::{
         branch::alt,
         bytes::complete::{tag, take_till1, take_while, take_while1},
-        combinator::value,
+        combinator::{opt, value},
         multi::{separated_list0, separated_list1},
         sequence::{delimited, tuple},
         IResult,
     };
+    pub fn is_newline(c: char) -> bool {
+        c == '\n'
+    }
+
+    pub fn non_whitespaces(input: &str) -> IResult<&str, &str> {
+        take_till1(|c: char| c.is_whitespace())(input)
+    }
+    pub fn newlines(input: &str) -> IResult<&str, &str> {
+        take_while1(is_newline)(input)
+    }
+    pub fn non_newlines(input: &str) -> IResult<&str, &str> {
+        take_while1(|c| !is_newline(c))(input)
+    }
+
+    pub fn skip_whitespace(input: &str) -> IResult<&str, &str> {
+        take_while(char::is_whitespace)(input)
+    }
+
+    pub fn double_comment(input: &str) -> IResult<&str, (&str, &str, &str)> {
+        tuple((tag("#"), take_while(char::is_whitespace), tag("#")))(input)
+    }
+
+    pub fn keyvalue(input: &str) -> IResult<&str, (&str, &str)> {
+        tuple((
+            &non_whitespaces,
+            delimited(skip_whitespace, tag("="), skip_whitespace),
+            &non_newlines,
+        ))(input)
+        .map(|(input, (k, _, v))| (input, (k, v)))
+    }
+
+    pub fn double_commented_key_value(input: &str) -> IResult<&str, (&str, &str)> {
+        tuple((double_comment, skip_whitespace, keyvalue))(input)
+            .map(|(input, (_, _, (key, value)))| (input, (key, value)))
+    }
 
     pub fn wireguard_entry(input: &str) -> IResult<&str, WireguardEntry> {
-        let is_newline = |c: char| c == '\n';
-        let non_whitespaces = take_till1(|c: char| c.is_whitespace());
-        let newlines = take_while1(is_newline);
-        let non_newlines = take_while1(|c| !is_newline(c));
-
+        let double_commented_key_values = separated_list0(newlines, double_commented_key_value);
         let header = alt((
             value(WireguardEntryType::Peer, tag("[Peer]")),
             value(WireguardEntryType::Interface, tag("[Interface]")),
         ));
 
-        let keyvalue = tuple((
-            &non_whitespaces,
-            delimited(
-                take_while(char::is_whitespace),
-                tag("="),
-                take_while(char::is_whitespace),
-            ),
-            &non_newlines,
-        ));
+        let keyvalues = separated_list0(newlines, keyvalue);
 
-        let keyvalues = separated_list0(&newlines, keyvalue);
+        let double_commented_key_values_segment =
+            opt(tuple((double_commented_key_values, newlines)));
 
-        let (input, (header, _, keyvalues)) = tuple((header, &newlines, keyvalues))(input)?;
-
+        let (input, (double_commented_key_values_segment, header, _, keyvalues)) =
+            tuple((
+                double_commented_key_values_segment,
+                header,
+                newlines,
+                keyvalues,
+            ))(input)?;
+        let extra_metadata = match double_commented_key_values_segment {
+            Some((metadata, _)) => metadata
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            None => Default::default(),
+        };
         Ok((
             input,
             WireguardEntry {
                 kind: header,
                 values: keyvalues
                     .into_iter()
-                    .map(|(key, _, value)| (key.to_string(), value.to_string()))
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
                     .collect(),
+                extra_metadata,
             },
         ))
     }
@@ -119,6 +170,52 @@ pub mod parser {
     }
 }
 
+#[cfg(test)]
+mod parser_unit_tests {
+    use super::parser::*;
+
+    #[test]
+    fn test_double_comment() {
+        assert_eq!(double_comment("##").unwrap(), ("", ("#", "", "#")));
+    }
+
+    #[test]
+    fn test_double_commented_key_value() {
+        assert_eq!(
+            double_commented_key_value("## Nickname = My Machine 1").unwrap(),
+            ("", ("Nickname", "My Machine 1"))
+        )
+    }
+
+    #[test]
+    fn test_single_entry() {
+        assert_eq!(
+            wireguard_entry(
+                r#"[Interface]
+PrivateKey = 8HZJm9txG0R48wz6gqqv8KP1secIj7ZRPv1nyt0lY1E=
+Address = 192.0.2.3"#
+            )
+            .unwrap()
+            .0,
+            ""
+        );
+    }
+
+    #[test]
+    fn test_single_extended_entry() {
+        assert_eq!(
+            wireguard_entry(
+                r#"## Nickname = My Machine 1
+[Interface]
+PrivateKey = 8HZJm9txG0R48wz6gqqv8KP1secIj7ZRPv1nyt0lY1E=
+Address = 192.0.2.3"#
+            )
+            .unwrap()
+            .0,
+            ""
+        );
+    }
+}
 #[cfg(test)]
 mod test_config_parsing {
     use super::parser::*;
@@ -156,5 +253,15 @@ PersistentKeepAlive = 15"#;
         );
 
         assert_eq!(conf, &wg.to_string())
+    }
+
+    #[test]
+    fn test_extended_syntax_config_parsing() {
+        let conf = include_str!("../test-extended-syntax.conf");
+        let (_input, wg) = WireguardConfig::from_str(conf).expect("bad format");
+        println!(
+            " :: PARSED CONFIG :: \n{}",
+            serde_json::to_string_pretty(&wg).unwrap()
+        );
     }
 }
