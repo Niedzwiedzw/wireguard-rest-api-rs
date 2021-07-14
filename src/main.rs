@@ -1,6 +1,7 @@
 mod wireguard_conf;
 mod api;
 mod error;
+mod wireguard_cli;
 
 use clap::{crate_version, App, Arg};
 use warp::Filter;

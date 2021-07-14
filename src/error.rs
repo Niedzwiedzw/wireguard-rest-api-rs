@@ -13,3 +13,5 @@ pub enum WireguardRestApiError {
     #[error("entry you're attempting to add ({0}) collides with entry ({1}) (ID: {0})")]
     NonUniquePublicKey(usize, WireguardEntry, WireguardEntry),
 }
+
+pub type WireguardRestApiResult<T> = Result<T, WireguardRestApiError>;

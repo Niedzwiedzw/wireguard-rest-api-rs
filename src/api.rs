@@ -23,6 +23,7 @@ pub fn api(
     secret: String,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     config_list(file_path.clone(), secret.clone())
+        .or(active_config_entries_list(file_path.clone(), secret.clone()))
         .or(config_get(file_path.clone(), secret.clone()))
         .or(config_delete(file_path.clone(), secret.clone()))
         .or(config_create(file_path.clone(), secret.clone()))
@@ -38,6 +39,18 @@ pub fn config_list(
         .and(warp::header::optional("Authorization"))
         .and(with_secret(secret))
         .and_then(handlers::config_list)
+}
+
+pub fn active_config_entries_list(
+    file_path: PathBuf,
+    secret: String,
+) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path!("active")
+        .and(warp::get())
+        .and(with_file_path(file_path))
+        .and(warp::header::optional("Authorization"))
+        .and(with_secret(secret))
+        .and_then(handlers::active_config_entries_list)
 }
 
 pub fn config_get(
@@ -83,7 +96,7 @@ pub mod handlers {
         wireguard_conf::{WireguardConfig, WireguardEntry},
     };
     use serde::Serialize;
-    use std::{convert::Infallible, path::PathBuf};
+    use std::{collections::HashMap, convert::Infallible, path::PathBuf};
     use warp::http::StatusCode;
 
     #[derive(Serialize)]
@@ -156,6 +169,39 @@ pub mod handlers {
         auth_required!(token, secret);
         let config = or_error!(read_config(&file_path));
 
+        Ok(warp::reply::with_status(
+            warp::reply::json(&config),
+            StatusCode::OK,
+        ))
+    }
+
+    pub async fn active_config_entries_list(
+        file_path: PathBuf,
+        token: Option<String>,
+        secret: String,
+    ) -> Result<impl warp::Reply, Infallible> {
+        auth_required!(token, secret);
+        let mut config = or_error!(read_config(&file_path));
+        let filename = or_error!(file_path.file_name().ok_or(WireguardRestApiError::NotFound))
+            .to_string_lossy()
+            .to_string();
+        let extension = or_error!(file_path.extension().ok_or(WireguardRestApiError::NotFound))
+            .to_string_lossy()
+            .to_string();
+        let extension_part = format!(".{}", extension);
+        let interface_name = filename.trim_end_matches(&extension_part);
+        let status = or_error!(crate::wireguard_cli::wireguard_status(interface_name));
+        let entries = status
+            .peers
+            .into_iter()
+            .map(|p| (p.public_key.clone(), p))
+            .collect::<HashMap<_, _>>();
+        config.0.retain(|_, v| {
+            v.values
+                .get("PublicKey")
+                .map(|key| entries.contains_key(key))
+                .unwrap_or(false)
+        });
         Ok(warp::reply::with_status(
             warp::reply::json(&config),
             StatusCode::OK,
