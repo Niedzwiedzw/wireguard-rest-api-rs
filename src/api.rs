@@ -23,7 +23,10 @@ pub fn api(
     secret: String,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     config_list(file_path.clone(), secret.clone())
-        .or(active_config_entries_list(file_path.clone(), secret.clone()))
+        .or(active_config_entries_list(
+            file_path.clone(),
+            secret.clone(),
+        ))
         .or(config_get(file_path.clone(), secret.clone()))
         .or(config_delete(file_path.clone(), secret.clone()))
         .or(config_create(file_path.clone(), secret.clone()))
@@ -93,13 +96,20 @@ pub fn config_delete(
 pub mod handlers {
     use crate::{
         error::WireguardRestApiError,
-        wireguard_conf::{WireguardConfig, WireguardEntry},
+        wireguard_conf::{
+            WireguardConfig,
+            WireguardEntry,
+        },
     };
     use serde::Serialize;
-    use std::{collections::HashMap, convert::Infallible, path::PathBuf};
+    use std::{
+        collections::HashMap,
+        convert::Infallible,
+        path::PathBuf,
+    };
     use warp::http::StatusCode;
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Debug)]
     pub struct ErrorMessage {
         pub code: u16,
         pub message: String,
@@ -112,10 +122,12 @@ pub mod handlers {
                 Ok(something) => something,
                 Err(e) => {
                     let code = warp::http::StatusCode::INTERNAL_SERVER_ERROR;
-                    let json = warp::reply::json(&ErrorMessage {
+                    let message = ErrorMessage {
                         code: code.as_u16(),
                         message: format!("{:?}", e),
-                    });
+                    };
+                    let json = warp::reply::json(&message);
+                    log::error!(" :: {:#?} ::", message);
                     return Ok(warp::reply::with_status(json, code));
                 }
             }
@@ -125,23 +137,30 @@ pub mod handlers {
     #[macro_export]
     macro_rules! auth_required {
         ($token:expr, $secret:expr) => {
+            log::debug!(" :: token :: {:?}", $token);
+            log::debug!(" :: secret :: {:?}", $secret);
             let token = if let Some(token) = $token {
                 token
             } else {
                 let code = warp::http::StatusCode::UNAUTHORIZED;
-                let json = warp::reply::json(&ErrorMessage {
+                let message = ErrorMessage {
                     code: code.as_u16(),
                     message: "Not authorized".to_string(),
-                });
+                };
+                log::error!(" :: {:#?} ::", message);
+                let json = warp::reply::json(&message);
                 return Ok(warp::reply::with_status(json, code));
             };
             if token.replace("Bearer ", "") == $secret {
+                log::debug!(" :: auth OK ::");
             } else {
                 let code = warp::http::StatusCode::UNAUTHORIZED;
-                let json = warp::reply::json(&ErrorMessage {
+                let message = ErrorMessage {
                     code: code.as_u16(),
                     message: "Not authorized".to_string(),
-                });
+                };
+                log::error!(" :: {:#?} ::", message);
+                let json = warp::reply::json(&message);
                 return Ok(warp::reply::with_status(json, code));
             }
         };
@@ -247,6 +266,7 @@ pub mod handlers {
         token: Option<String>,
         secret: String,
     ) -> Result<impl warp::Reply, Infallible> {
+        use itertools::Itertools;
         auth_required!(token, secret);
         let mut config = or_error!(read_config(&file_path));
         if let Some((id, v)) = config
@@ -260,7 +280,33 @@ pub mod handlers {
                 v.clone(),
             )))
         }
+        let before = config.0.len();
+        // let allowed_ips = "allowed_ips";
+
+        let key = |entry: &WireguardEntry| -> Option<String> {
+            entry.extra_metadata.get("station_location").cloned()
+        };
+        let new = config
+            .0
+            .drain(..)
+            .filter(|(_, entry)| {
+                let already_exists = key(entry)
+                    .map(|ip| {
+                        key(&create)
+                            .map(|create_ip| create_ip == ip)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                !already_exists
+            })
+            .rev()
+            .unique_by(|(index, entry)| key(entry).unwrap_or_else(|| index.to_string()))
+            .rev()
+            .collect();
+        config.0 = new;
+        println!("WARN: removed {} entries", before - config.0.len());
         let _entry = config.0.insert(config.0.len(), create.clone());
+
         or_error!(std::fs::write(&file_path, &config.to_string()));
 
         Ok(warp::reply::with_status(
