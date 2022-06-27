@@ -284,7 +284,7 @@ pub mod handlers {
         // let allowed_ips = "allowed_ips";
 
         let key = |entry: &WireguardEntry| -> Option<String> {
-            entry.extra_metadata.get("station_location").cloned()
+            entry.extra_metadata.get("StationLocation").cloned()
         };
         let new = config
             .0
