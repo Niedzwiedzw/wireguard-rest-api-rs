@@ -300,7 +300,11 @@ pub mod handlers {
                 !already_exists
             })
             .rev()
+            .collect_vec()
+            .into_iter()
             .unique_by(|(index, entry)| key(entry).unwrap_or_else(|| index.to_string()))
+            .collect_vec()
+            .into_iter()
             .rev()
             .collect();
         config.0 = new;
