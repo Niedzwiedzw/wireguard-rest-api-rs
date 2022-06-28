@@ -1,4 +1,7 @@
-use crate::wireguard_conf::WireguardEntry;
+use crate::{
+    wireguard_cli::WireguardCli,
+    wireguard_conf::WireguardEntry,
+};
 use std::path::PathBuf;
 use warp::Filter;
 
@@ -18,84 +21,115 @@ pub fn with_secret(
     warp::any().map(move || secret.clone())
 }
 
+pub fn with_wireguard_cli(
+    wireguard_cli: WireguardCli,
+) -> impl Filter<Extract = (WireguardCli,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || wireguard_cli.clone())
+}
+
 pub fn api(
-    file_path: PathBuf,
+    // file_path: PathBuf,
     secret: String,
+    wireguard_cli: WireguardCli,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    config_list(file_path.clone(), secret.clone())
+    config_list(secret.clone(), wireguard_cli.clone())
         .or(active_config_entries_list(
-            file_path.clone(),
+            // file_path.clone(),
             secret.clone(),
+            wireguard_cli.clone(),
         ))
-        .or(config_get(file_path.clone(), secret.clone()))
-        .or(config_delete(file_path.clone(), secret.clone()))
-        .or(config_create(file_path.clone(), secret.clone()))
+        .or(config_get(
+            // file_path.clone(),
+            secret.clone(),
+            wireguard_cli.clone(),
+        ))
+        .or(config_delete(
+            // file_path.clone(),
+            secret.clone(),
+            wireguard_cli.clone(),
+        ))
+        .or(config_create(
+            // file_path.clone(),
+            secret.clone(),
+            wireguard_cli.clone(),
+        ))
 }
 
 pub fn config_list(
-    file_path: PathBuf,
+    // file_path: PathBuf,
     secret: String,
+    wireguard_cli: WireguardCli,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path::end()
         .and(warp::get())
-        .and(with_file_path(file_path))
+        // .and(with_file_path(file_path))
         .and(warp::header::optional("Authorization"))
         .and(with_secret(secret))
+        .and(with_wireguard_cli(wireguard_cli))
         .and_then(handlers::config_list)
 }
 
 pub fn active_config_entries_list(
-    file_path: PathBuf,
+    // file_path: PathBuf,
     secret: String,
+    wireguard_cli: WireguardCli,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path!("active")
         .and(warp::get())
-        .and(with_file_path(file_path))
+        // .and(with_file_path(file_path))
         .and(warp::header::optional("Authorization"))
         .and(with_secret(secret))
+        .and(with_wireguard_cli(wireguard_cli))
         .and_then(handlers::active_config_entries_list)
 }
 
 pub fn config_get(
-    file_path: PathBuf,
+    // file_path: PathBuf,
     secret: String,
+    wireguard_cli: WireguardCli,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path!(usize)
         .and(warp::post())
-        .and(with_file_path(file_path))
+        // .and(with_file_path(file_path))
         .and(warp::header::optional("Authorization"))
         .and(with_secret(secret))
+        .and(with_wireguard_cli(wireguard_cli))
         .and_then(handlers::config_get)
 }
 
 pub fn config_create(
-    file_path: PathBuf,
+    // file_path: PathBuf,
     secret: String,
+    wireguard_cli: WireguardCli,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path::end()
         .and(warp::post())
         .and(json_body())
-        .and(with_file_path(file_path))
+        // .and(with_file_path(file_path))
         .and(warp::header::optional("Authorization"))
         .and(with_secret(secret))
+        .and(with_wireguard_cli(wireguard_cli))
         .and_then(handlers::config_create)
 }
 
 pub fn config_delete(
-    file_path: PathBuf,
+    // file_path: PathBuf,
     secret: String,
+    wireguard_cli: WireguardCli,
 ) -> impl warp::Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path!(usize)
         .and(warp::delete())
-        .and(with_file_path(file_path))
+        // .and(with_file_path(file_path))
         .and(warp::header::optional("Authorization"))
         .and(with_secret(secret))
+        .and(with_wireguard_cli(wireguard_cli))
         .and_then(handlers::config_delete)
 }
 
 pub mod handlers {
     use crate::{
         error::WireguardRestApiError,
+        wireguard_cli::WireguardCli,
         wireguard_conf::{
             WireguardConfig,
             WireguardEntry,
@@ -105,7 +139,6 @@ pub mod handlers {
     use std::{
         collections::HashMap,
         convert::Infallible,
-        path::PathBuf,
     };
     use warp::http::StatusCode;
 
@@ -166,10 +199,10 @@ pub mod handlers {
         };
     }
 
-    fn read_config<T: AsRef<std::path::Path>>(
+    async fn read_config<T: AsRef<std::path::Path>>(
         file_path: T,
     ) -> Result<WireguardConfig, WireguardRestApiError> {
-        let mut text: String = std::fs::read_to_string(&file_path)?;
+        let mut text: String = tokio::fs::read_to_string(&file_path).await?;
         if !text.ends_with("\n") {
             text.push('\n');
         }
@@ -181,12 +214,14 @@ pub mod handlers {
     }
 
     pub async fn config_list(
-        file_path: PathBuf,
+        // file_path: PathBuf,
         token: Option<String>,
         secret: String,
+        wireguard_cli: WireguardCli,
     ) -> Result<impl warp::Reply, Infallible> {
         auth_required!(token, secret);
-        let config = or_error!(read_config(&file_path));
+        let file_path = wireguard_cli.file_path.read().await;
+        let config = or_error!(read_config(file_path.as_path()).await);
 
         Ok(warp::reply::with_status(
             warp::reply::json(&config),
@@ -195,21 +230,15 @@ pub mod handlers {
     }
 
     pub async fn active_config_entries_list(
-        file_path: PathBuf,
+        // file_path: PathBuf,
         token: Option<String>,
         secret: String,
+        wireguard_cli: WireguardCli,
     ) -> Result<impl warp::Reply, Infallible> {
         auth_required!(token, secret);
-        let mut config = or_error!(read_config(&file_path));
-        let filename = or_error!(file_path.file_name().ok_or(WireguardRestApiError::NotFound))
-            .to_string_lossy()
-            .to_string();
-        let extension = or_error!(file_path.extension().ok_or(WireguardRestApiError::NotFound))
-            .to_string_lossy()
-            .to_string();
-        let extension_part = format!(".{}", extension);
-        let interface_name = filename.trim_end_matches(&extension_part);
-        let status = or_error!(crate::wireguard_cli::wireguard_status(interface_name));
+        let file_path = wireguard_cli.file_path.read().await;
+        let mut config = or_error!(read_config(file_path.as_path()).await);
+        let status = or_error!(wireguard_cli.wireguard_status().await);
         let entries = status
             .peers
             .into_iter()
@@ -229,12 +258,14 @@ pub mod handlers {
 
     pub async fn config_get(
         id: usize,
-        file_path: PathBuf,
+        // file_path: PathBuf,
         token: Option<String>,
         secret: String,
+        wireguard_cli: WireguardCli,
     ) -> Result<impl warp::Reply, Infallible> {
         auth_required!(token, secret);
-        let config = or_error!(read_config(&file_path));
+        let file_path = wireguard_cli.file_path.read().await;
+        let config = or_error!(read_config(file_path.as_path()).await);
         let entry = or_error!(config.0.get(&id).ok_or(WireguardRestApiError::NotFound));
 
         Ok(warp::reply::with_status(
@@ -245,14 +276,17 @@ pub mod handlers {
 
     pub async fn config_delete(
         id: usize,
-        file_path: PathBuf,
+        // file_path: PathBuf,
         token: Option<String>,
         secret: String,
+        wireguard_cli: WireguardCli,
     ) -> Result<impl warp::Reply, Infallible> {
         auth_required!(token, secret);
-        let mut config = or_error!(read_config(&file_path));
+        let file_path = wireguard_cli.file_path.write().await;
+        let mut config = or_error!(read_config(file_path.as_path()).await);
         let _entry = or_error!(config.0.remove(&id).ok_or(WireguardRestApiError::NotFound));
-        or_error!(std::fs::write(&file_path, &config.to_string()));
+        or_error!(tokio::fs::write(file_path.as_path(), &config.to_string()).await);
+        or_error!(wireguard_cli.wireguard_refresh().await);
 
         Ok(warp::reply::with_status(
             warp::reply::json(&config),
@@ -262,13 +296,15 @@ pub mod handlers {
 
     pub async fn config_create(
         create: WireguardEntry,
-        file_path: PathBuf,
+        // file_path: PathBuf,
         token: Option<String>,
         secret: String,
+        wireguard_cli: WireguardCli,
     ) -> Result<impl warp::Reply, Infallible> {
         use itertools::Itertools;
         auth_required!(token, secret);
-        let mut config = or_error!(read_config(&file_path));
+        let file_path = wireguard_cli.file_path.write().await;
+        let mut config = or_error!(read_config(file_path.as_path()).await);
         if let Some((id, v)) = config
             .0
             .iter()
@@ -311,7 +347,8 @@ pub mod handlers {
         println!("WARN: removed {} entries", before - config.0.len());
         let _entry = config.0.insert(config.0.len(), create.clone());
 
-        or_error!(std::fs::write(&file_path, &config.to_string()));
+        or_error!(tokio::fs::write(file_path.as_path(), &config.to_string()).await);
+        or_error!(wireguard_cli.wireguard_refresh().await);
 
         Ok(warp::reply::with_status(
             warp::reply::json(&create),

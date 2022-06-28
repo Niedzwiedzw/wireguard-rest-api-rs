@@ -1,8 +1,16 @@
-use std::{collections::HashMap, convert::TryFrom};
+use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    path::PathBuf,
+    sync::Arc,
+};
 
-use crate::error::{WireguardRestApiError, WireguardRestApiResult};
+use crate::error::{
+    WireguardRestApiError,
+    WireguardRestApiResult,
+};
 use serde::Serialize;
-
+use tokio::sync::RwLock;
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
 pub struct PeerOutput {
@@ -18,7 +26,7 @@ impl TryFrom<&str> for PeerOutput {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let value = value.trim();
         let lines: HashMap<&str, &str> = value
-            .split("\n")
+            .split('\n')
             .map(|v| v.trim())
             .filter_map(|v| v.split_once(": "))
             .map(|(key, value)| (key.trim(), value.trim()))
@@ -28,27 +36,35 @@ impl TryFrom<&str> for PeerOutput {
         Ok(PeerOutput {
             public_key: lines
                 .get("peer")
-                .ok_or(WireguardRestApiError::ConfigParseError(format!(
-                    "key 'peer' not found in output"
-                )))?
+                .ok_or_else(|| {
+                    WireguardRestApiError::ConfigParseError(
+                        "key 'peer' not found in output".to_string(),
+                    )
+                })?
                 .to_string(),
             allowed_ips: lines
                 .get("allowed ips")
-                .ok_or(WireguardRestApiError::ConfigParseError(format!(
-                    "key 'allowed ips' not found in output"
-                )))?
+                .ok_or_else(|| {
+                    WireguardRestApiError::ConfigParseError(
+                        "key 'allowed ips' not found in output".to_string(),
+                    )
+                })?
                 .to_string(),
             latest_handshake: lines
                 .get("latest handshake")
-                .ok_or(WireguardRestApiError::ConfigParseError(format!(
-                    "key 'latest handshake' not found in output"
-                )))?
+                .ok_or_else(|| {
+                    WireguardRestApiError::ConfigParseError(
+                        "key 'latest handshake' not found in output".to_string(),
+                    )
+                })?
                 .to_string(),
             transfer: lines
                 .get("transfer")
-                .ok_or(WireguardRestApiError::ConfigParseError(format!(
-                    "key 'transfer' not found in output"
-                )))?
+                .ok_or_else(|| {
+                    WireguardRestApiError::ConfigParseError(
+                        "key 'transfer' not found in output".to_string(),
+                    )
+                })?
                 .to_string(),
         })
     }
@@ -72,21 +88,95 @@ impl TryFrom<&str> for WireguardShowOutput {
     }
 }
 
-fn wireguard_status_raw(interface_name: &str) -> WireguardRestApiResult<String> {
-    let mut command = std::process::Command::new("wg");
-    command.arg("show")
-        .arg(interface_name);
-    log::debug!(" :: executing command :: {:?}", command);
-    let output = command
-        .output()?;
-    let output = String::from_utf8_lossy(&output.stdout).to_string();
-    log::debug!(" :: output ::\n{}", output);
-    Ok(output)
+/// Wrapper around config file access and cli commands
+#[derive(Clone)]
+pub struct WireguardCli {
+    /// this symbolises file access
+    pub file_path: Arc<RwLock<PathBuf>>,
+    /// this symbolises cli access
+    pub interface_name: Arc<RwLock<String>>,
 }
+fn normalize(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).to_string()
+}
+fn handle_output(output: &std::process::Output) -> WireguardRestApiResult<String> {
+    let (stdout, stderr) = (normalize(&output.stdout), normalize(&output.stderr));
+    if !output.status.success() {
+        Err(WireguardRestApiError::CommandError {
+            code: output.status.code(),
+            message: if stderr.is_empty() { stdout } else { stderr },
+        })
+    } else {
+        Ok(stdout)
+    }
+}
+impl WireguardCli {
+    pub fn new(file_path: &std::path::Path) -> WireguardRestApiResult<Self> {
+        file_path.try_exists()?;
+        let filename = file_path
+            .file_name()
+            .ok_or(WireguardRestApiError::NotFound)?
+            .to_string_lossy()
+            .to_string();
+        let extension = file_path
+            .extension()
+            .ok_or(WireguardRestApiError::NotFound)?
+            .to_string_lossy()
+            .to_string();
+        let extension_part = format!(".{}", extension);
+        let interface_name = filename.trim_end_matches(&extension_part);
 
-pub fn wireguard_status(interface_name: &str) -> WireguardRestApiResult<WireguardShowOutput> {
-    WireguardShowOutput::try_from(wireguard_status_raw(interface_name)?.as_str())
+        Ok(Self {
+            file_path: Arc::new(RwLock::new(file_path.to_owned())),
+            interface_name: Arc::new(RwLock::new(interface_name.to_string())),
+        })
+    }
+    async fn wireguard_status_raw(&self) -> WireguardRestApiResult<String> {
+        let interface_name = self.interface_name.read().await;
+        let mut command = tokio::process::Command::new("wg");
+        command.arg("show").arg(interface_name.as_str());
+        log::debug!(" :: executing command :: {:?}", command);
+        let output = command.output().await?;
+        handle_output(&output)
+    }
+
+    pub async fn wireguard_status(&self) -> WireguardRestApiResult<WireguardShowOutput> {
+        WireguardShowOutput::try_from(self.wireguard_status_raw().await?.as_str())
+    }
+    pub async fn wireguard_refresh(&self) -> WireguardRestApiResult<()> {
+        use tokio::process::Command;
+        let interface_name = self.interface_name.write().await;
+        handle_output(
+            &Command::new("wg-quick")
+                .arg("down")
+                .arg(interface_name.as_str())
+                .output()
+                .await?,
+        )?;
+        handle_output(
+            &Command::new("wg-quick")
+                .arg("up")
+                .arg(interface_name.as_str())
+                .output()
+                .await?,
+        )?;
+        Ok(())
+        // let mut command = txcokio::process::Command::new("wg-quick")
+    }
 }
+// fn wireguard_status_raw(interface_name: &str) -> WireguardRestApiResult<String> {
+//     let mut command = std::process::Command::new("wg");
+//     command.arg("show").arg(interface_name);
+//     log::debug!(" :: executing command :: {:?}", command);
+//     let output = command.output()?;
+//     let output = String::from_utf8_lossy(&output.stdout).to_string();
+//     log::debug!(" :: output ::\n{}", output);
+//     Ok(output)
+// }
+
+// pub fn wireguard_status(interface_name: &str) -> WireguardRestApiResult<WireguardShowOutput> {
+//     WireguardShowOutput::try_from(wireguard_status_raw(interface_name)?.as_str())
+// }
 
 #[cfg(test)]
 mod test_wireguard_cli {

@@ -1,11 +1,19 @@
-mod wireguard_conf;
 mod api;
 mod error;
 mod wireguard_cli;
+mod wireguard_conf;
 
-use clap::{crate_version, App, Arg};
+use clap::{
+    crate_version,
+    App,
+    Arg,
+};
+use std::{
+    convert::TryFrom,
+    net::Ipv4Addr,
+    path::PathBuf,
+};
 use warp::Filter;
-use std::{net::Ipv4Addr, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_name("STRING")
                 .about("secret token used to authenticate actions")
                 .takes_value(true)
-                .required(true)
+                .required(true),
         )
         .arg(
             Arg::new("port")
@@ -28,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_name("NUMBER")
                 .about("port to serve the API over")
                 .takes_value(true)
-                .required(true)
+                .required(true),
         )
         .arg(
             Arg::new("file_path")
@@ -36,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_name("FILE")
                 .about("config path to modify")
                 .takes_value(true)
-                .required(true)
+                .required(true),
         )
         .arg(
             Arg::new("host")
@@ -44,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_name("IP")
                 .about("IP to serve the API over")
                 .takes_value(true)
-                .required(true)
+                .required(true),
         )
         .get_matches();
 
@@ -61,12 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(" :: port:       {}", port);
     eprintln!(" :: file_path:  {:?}", file_path);
     eprintln!(" :: igniting ::");
-    warp::serve(
-        api::api(
-            PathBuf::from(file_path),
-            token.to_string(),
-        ).with(warp::log("HTTP-API")),
-    ).run((host, port)).await;
+    let wireguard_cli = wireguard_cli::WireguardCli::new(&file_path)?;
+    warp::serve(api::api(token.to_string(), wireguard_cli).with(warp::log("HTTP-API")))
+        .run((host, port))
+        .await;
 
     Ok(())
 }
