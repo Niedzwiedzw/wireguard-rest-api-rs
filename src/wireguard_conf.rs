@@ -1,5 +1,8 @@
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub enum WireguardEntryType {
@@ -76,10 +79,26 @@ pub mod parser {
     use super::*;
     use nom::{
         branch::alt,
-        bytes::complete::{tag, take_till1, take_while, take_while1},
-        combinator::{opt, value},
-        multi::{separated_list0, separated_list1},
-        sequence::{delimited, tuple},
+        bytes::complete::{
+            tag,
+            take_till,
+            take_till1,
+            take_while,
+            take_while1,
+        },
+        combinator::{
+            opt,
+            value,
+        },
+        multi::{
+            separated_list0,
+            separated_list1,
+        },
+        sequence::{
+            delimited,
+            terminated,
+            tuple,
+        },
         IResult,
     };
     pub fn is_newline(c: char) -> bool {
@@ -88,6 +107,9 @@ pub mod parser {
 
     pub fn non_whitespaces(input: &str) -> IResult<&str, &str> {
         take_till1(|c: char| c.is_whitespace())(input)
+    }
+    pub fn maybe_empty_non_newlines(input: &str) -> IResult<&str, &str> {
+        take_while(|c: char| c != '\n')(input)
     }
     pub fn newlines(input: &str) -> IResult<&str, &str> {
         take_while1(is_newline)(input)
@@ -100,15 +122,18 @@ pub mod parser {
         take_while(char::is_whitespace)(input)
     }
 
+    pub fn skip_whitespace_non_newline(input: &str) -> IResult<&str, &str> {
+        take_while(|c: char| c.is_whitespace() && c != '\n')(input)
+    }
     pub fn double_comment(input: &str) -> IResult<&str, (&str, &str, &str)> {
         tuple((tag("#"), take_while(char::is_whitespace), tag("#")))(input)
     }
 
     pub fn keyvalue(input: &str) -> IResult<&str, (&str, &str)> {
         tuple((
-            &non_whitespaces,
-            delimited(skip_whitespace, tag("="), skip_whitespace),
-            &non_newlines,
+            non_whitespaces,
+            delimited(skip_whitespace, tag("="), skip_whitespace_non_newline),
+            maybe_empty_non_newlines,
         ))(input)
         .map(|(input, (k, _, v))| (input, (k, v)))
     }
@@ -220,6 +245,31 @@ Address = 192.0.2.3"#
 mod test_config_parsing {
     use super::parser::*;
     use super::*;
+
+    #[test]
+    fn test_entry_empty_value() {
+        const ENTRY: &str = r#"## Nickname = 
+## SomethingElse = dupa
+[Interface]
+PrivateKey = 8HZJm9txG0R48wz6gqqv8KP1secIj7ZRPv1nyt0lY1E=
+Address = 192.0.2.3"#;
+        let entry = wireguard_entry(ENTRY).unwrap().1;
+        println!("{entry:#?}");
+        assert_eq!(
+            entry.extra_metadata.get("Nickname"),
+            Some(&"".to_string()),
+            "Nickname has collected all the values"
+        );
+        assert_eq!(
+            entry.extra_metadata.get("SomethingElse"),
+            Some(&"dupa".to_string()),
+            "no SomethingElse found"
+        );
+
+        let back_to_string = entry.to_string();
+        println!("{back_to_string}");
+        assert_eq!(ENTRY.trim(), back_to_string.as_str().trim());
+    }
 
     #[test]
     fn test_config_entry_parsing() {
