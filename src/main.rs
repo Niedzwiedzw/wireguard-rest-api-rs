@@ -1,3 +1,5 @@
+#![deny(unused_must_use)]
+
 mod api;
 mod error;
 mod wireguard_cli;
@@ -8,11 +10,7 @@ use clap::{
     App,
     Arg,
 };
-use std::{
-    convert::TryFrom,
-    net::Ipv4Addr,
-    path::PathBuf,
-};
+use std::net::Ipv4Addr;
 use warp::Filter;
 
 #[tokio::main]

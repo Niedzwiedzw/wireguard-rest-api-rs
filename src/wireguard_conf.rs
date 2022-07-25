@@ -62,7 +62,7 @@ impl WireguardEntry {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireguardConfig(pub IndexMap<usize, WireguardEntry>);
 
 impl WireguardConfig {

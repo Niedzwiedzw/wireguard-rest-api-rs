@@ -50,8 +50,8 @@ pub fn api(
         ))
         .or(config_create(
             // file_path.clone(),
-            secret.clone(),
-            wireguard_cli.clone(),
+            secret,
+            wireguard_cli,
         ))
 }
 
@@ -135,6 +135,7 @@ pub mod handlers {
             WireguardEntry,
         },
     };
+    use itertools::Itertools;
     use serde::Serialize;
     use std::{
         collections::HashMap,
@@ -203,7 +204,7 @@ pub mod handlers {
         file_path: T,
     ) -> Result<WireguardConfig, WireguardRestApiError> {
         let mut text: String = tokio::fs::read_to_string(&file_path).await?;
-        if !text.ends_with("\n") {
+        if !text.ends_with('\n') {
             text.push('\n');
         }
         let parse = WireguardConfig::from_str(&text);
@@ -294,27 +295,20 @@ pub mod handlers {
         ))
     }
 
-    pub async fn config_create(
+    async fn update_config_with_entry(
+        mut config: WireguardConfig,
         create: WireguardEntry,
-        // file_path: PathBuf,
-        token: Option<String>,
-        secret: String,
-        wireguard_cli: WireguardCli,
-    ) -> Result<impl warp::Reply, Infallible> {
-        use itertools::Itertools;
-        auth_required!(token, secret);
-        let file_path = wireguard_cli.file_path.write().await;
-        let mut config = or_error!(read_config(file_path.as_path()).await);
+    ) -> Result<WireguardConfig, WireguardRestApiError> {
         if let Some((id, v)) = config
             .0
             .iter()
             .find(|(_, v)| v.values.get("PublicKey") == create.values.get("PublicKey"))
         {
-            or_error!(Err(WireguardRestApiError::NonUniquePublicKey(
+            return Err(WireguardRestApiError::NonUniquePublicKey(
                 *id,
                 create.clone(),
                 v.clone(),
-            )))
+            ));
         }
         let before = config.0.len();
         // let allowed_ips = "allowed_ips";
@@ -345,11 +339,92 @@ pub mod handlers {
             .collect();
         config.0 = new;
         println!("WARN: removed {} entries", before - config.0.len());
-        let _entry = config.0.insert(config.0.len(), create.clone());
+        let _entry = config.0.insert(before * 2, create);
+        Ok(config)
+    }
 
-        or_error!(tokio::fs::write(file_path.as_path(), &config.to_string()).await);
-        or_error!(wireguard_cli.wireguard_refresh().await);
+    #[cfg(test)]
+    mod tests {
+        use crate::wireguard_conf::WireguardEntryType::Peer;
 
+        use super::*;
+        use eyre::{
+            Result,
+            WrapErr,
+        };
+        #[tokio::test]
+        async fn test_adding_entries() -> Result<()> {
+            const STATION_LOCATION_KEY: &str = "StationLocation";
+            const PUBLIC_KEY_KEY: &str = "PublicKey";
+            let config: WireguardConfig = Default::default();
+            let entry = |location_name: &str| -> WireguardEntry {
+                WireguardEntry {
+                    kind: Peer,
+                    values: vec![(PUBLIC_KEY_KEY.to_string(), uuid::Uuid::new_v4().to_string())]
+                        .into_iter()
+                        .collect(),
+                    extra_metadata: vec![(
+                        STATION_LOCATION_KEY.to_string(),
+                        location_name.to_string(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                }
+            };
+            let station_a = "station-a";
+            let station_b = "station-b";
+            assert_eq!(entry_by_station_name(&config, station_a), None);
+            assert_eq!(entry_by_station_name(&config, station_b), None);
+            let config = update_config_with_entry(config, entry(station_a)).await?;
+
+            assert!(entry_by_station_name(&config, station_a).is_some());
+            assert_eq!(entry_by_station_name(&config, station_b), None);
+
+            let config = update_config_with_entry(config, entry(station_b)).await?;
+            assert!(entry_by_station_name(&config, station_a).is_some());
+            assert!(entry_by_station_name(&config, station_b).is_some());
+
+            let config = update_config_with_entry(config, entry(station_a)).await?;
+            assert!(entry_by_station_name(&config, station_a).is_some());
+            assert!(entry_by_station_name(&config, station_b).is_some());
+
+            Ok(())
+        }
+
+        fn entry_by_station_name<'config>(
+            config: &'config WireguardConfig,
+            location_name: &str,
+        ) -> Option<&'config WireguardEntry> {
+            config.0.iter().map(|(_, v)| v).find(|v| {
+                v.extra_metadata
+                    .iter()
+                    .map(|(_, v)| v)
+                    .any(|v| v == location_name)
+            })
+        }
+    }
+
+    async fn config_create_task(
+        create: WireguardEntry,
+        wireguard_cli: WireguardCli,
+    ) -> Result<(), WireguardRestApiError> {
+        let file_path = wireguard_cli.file_path.write().await;
+        let config = read_config(file_path.as_path()).await?;
+        let config = update_config_with_entry(config, create).await?;
+        tokio::fs::write(file_path.as_path(), &config.to_string()).await?;
+        wireguard_cli.wireguard_refresh().await?;
+        Ok(())
+    }
+
+    pub async fn config_create(
+        create: WireguardEntry,
+        // file_path: PathBuf,
+        token: Option<String>,
+        secret: String,
+        wireguard_cli: WireguardCli,
+    ) -> Result<impl warp::Reply, Infallible> {
+        auth_required!(token, secret);
+        or_error!(config_create_task(create.clone(), wireguard_cli).await);
         Ok(warp::reply::with_status(
             warp::reply::json(&create),
             StatusCode::CREATED,
