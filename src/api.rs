@@ -295,7 +295,25 @@ pub mod handlers {
         ))
     }
 
-    async fn update_config_with_entry(
+    fn keep_only_latest_entries<F>(config: WireguardConfig, key: F) -> WireguardConfig
+    where
+        F: Fn(&WireguardEntry) -> String,
+    {
+        WireguardConfig(
+            config
+                .0
+                .into_iter()
+                .rev()
+                .collect_vec()
+                .into_iter()
+                .unique_by(|(_, entry)| key(entry))
+                .collect_vec()
+                .into_iter()
+                .rev()
+                .collect(),
+        )
+    }
+    fn update_config_with_entry(
         mut config: WireguardConfig,
         create: WireguardEntry,
     ) -> Result<WireguardConfig, WireguardRestApiError> {
@@ -310,36 +328,53 @@ pub mod handlers {
                 v.clone(),
             ));
         }
-        let before = config.0.len();
+        let before = config.0.len() as i32;
         // let allowed_ips = "allowed_ips";
 
-        let key = |entry: &WireguardEntry| -> Option<String> {
-            entry.extra_metadata.get("StationLocation").cloned()
-        };
-        let new = config
-            .0
-            .drain(..)
-            .filter(|(_, entry)| {
-                let already_exists = key(entry)
-                    .map(|ip| {
-                        key(&create)
-                            .map(|create_ip| create_ip == ip)
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default();
-                !already_exists
-            })
-            .rev()
-            .collect_vec()
-            .into_iter()
-            .unique_by(|(index, entry)| key(entry).unwrap_or_else(|| index.to_string()))
-            .collect_vec()
-            .into_iter()
-            .rev()
-            .collect();
-        config.0 = new;
-        println!("WARN: removed {} entries", before - config.0.len());
-        let _entry = config.0.insert(before * 2, create);
+        // let key = |entry: &WireguardEntry| -> Option<String> {
+        //     entry.extra_metadata.get("StationLocation").cloned()
+        // };
+        let _entry = config.0.insert(
+            config.0.keys().cloned().max().unwrap_or_default() + 1,
+            create,
+        );
+
+        let config = keep_only_latest_entries(config, |entry| {
+            entry
+                .extra_metadata
+                .get("StationLocation")
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| {
+                    entry
+                        .values
+                        .get("PublicKey")
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                })
+        });
+        // let new = config
+        //     .0
+        //     .drain(..)
+        //     .filter(|(_, entry)| {
+        //         let already_exists = key(entry)
+        //             .map(|location_name| {
+        //                 key(&create)
+        //                     .map(|create_location_name| create_location_name == location_name)
+        //                     .unwrap_or_default()
+        //             })
+        //             .unwrap_or_default();
+        //         !already_exists
+        //     })
+        //     .rev()
+        //     .collect_vec()
+        //     .into_iter()
+        //     .unique_by(|(index, entry)| key(entry).unwrap_or_else(|| index.to_string()))
+        //     .collect_vec()
+        //     .into_iter()
+        //     .rev()
+        //     .collect();
+        // config.0 = new;
+        println!("WARN: removed {} entries", before - config.0.len() as i32);
         Ok(config)
     }
 
@@ -352,42 +387,90 @@ pub mod handlers {
             Result,
             WrapErr,
         };
-        #[tokio::test]
-        async fn test_adding_entries() -> Result<()> {
-            const STATION_LOCATION_KEY: &str = "StationLocation";
-            const PUBLIC_KEY_KEY: &str = "PublicKey";
-            let config: WireguardConfig = Default::default();
-            let entry = |location_name: &str| -> WireguardEntry {
-                WireguardEntry {
-                    kind: Peer,
-                    values: vec![(PUBLIC_KEY_KEY.to_string(), uuid::Uuid::new_v4().to_string())]
-                        .into_iter()
-                        .collect(),
-                    extra_metadata: vec![(
-                        STATION_LOCATION_KEY.to_string(),
-                        location_name.to_string(),
-                    )]
+        const STATION_LOCATION_KEY: &str = "StationLocation";
+        const PUBLIC_KEY_KEY: &str = "PublicKey";
+
+        fn entry(location_name: &str) -> WireguardEntry {
+            WireguardEntry {
+                kind: Peer,
+                values: vec![(PUBLIC_KEY_KEY.to_string(), uuid::Uuid::new_v4().to_string())]
                     .into_iter()
                     .collect(),
+                extra_metadata: vec![(STATION_LOCATION_KEY.to_string(), location_name.to_string())]
+                    .into_iter()
+                    .collect(),
+            }
+        }
+
+        #[test]
+        fn test_adding_entries() -> Result<()> {
+            let config: WireguardConfig = Default::default();
+            assert_eq!(entry_by_station_name(&config, "station_a"), None);
+            assert_eq!(entry_by_station_name(&config, "station_b"), None);
+            let config = update_config_with_entry(config, entry("station_a"))?;
+
+            assert!(entry_by_station_name(&config, "station_a").is_some());
+            assert_eq!(entry_by_station_name(&config, "station_b"), None);
+
+            let config = update_config_with_entry(config, entry("station_b"))?;
+            assert!(entry_by_station_name(&config, "station_a").is_some());
+            assert!(entry_by_station_name(&config, "station_b").is_some());
+
+            let config = update_config_with_entry(config, entry("station_a"))?;
+            assert!(entry_by_station_name(&config, "station_a").is_some());
+            assert!(entry_by_station_name(&config, "station_b").is_some());
+            let config = update_config_with_entry(config, entry("station_c"))?;
+            assert!(entry_by_station_name(&config, "station_a").is_some());
+            assert!(entry_by_station_name(&config, "station_b").is_some());
+            assert!(entry_by_station_name(&config, "station_c").is_some());
+
+            Ok(())
+        }
+        #[test]
+        fn test_extreme_example() -> Result<()> {
+            let config = WireguardConfig::default();
+            let expected = (0..20).map(|i| format!("station_{i}")).collect_vec();
+            let mut config = expected.iter().try_fold(config, |acc, next| {
+                update_config_with_entry(acc, entry(next))
+            })?;
+            assert_eq!(config.0.len(), expected.len());
+            for iteration in 0..3 {
+                eprintln!("iteration nr {iteration}");
+                for exp in expected.iter() {
+                    eprintln!("BEFORE\n{config:#?}");
+                    config = update_config_with_entry(config, entry(exp))?;
+                    eprintln!("AFTER\n{config:#?}");
+                    assert_eq!(
+                        expected
+                            .iter()
+                            .find(|entry| entry_by_station_name(&config, entry).is_none()),
+                        None
+                    );
                 }
-            };
-            let station_a = "station-a";
-            let station_b = "station-b";
-            assert_eq!(entry_by_station_name(&config, station_a), None);
-            assert_eq!(entry_by_station_name(&config, station_b), None);
-            let config = update_config_with_entry(config, entry(station_a)).await?;
+            }
+            let mut config = update_config_with_entry(config, entry("station_5000"))?;
+            assert_eq!(
+                expected
+                    .iter()
+                    .find(|entry| entry_by_station_name(&config, entry).is_none()),
+                None
+            );
+            assert!(entry_by_station_name(&config, "station_5000").is_some());
 
-            assert!(entry_by_station_name(&config, station_a).is_some());
-            assert_eq!(entry_by_station_name(&config, station_b), None);
-
-            let config = update_config_with_entry(config, entry(station_b)).await?;
-            assert!(entry_by_station_name(&config, station_a).is_some());
-            assert!(entry_by_station_name(&config, station_b).is_some());
-
-            let config = update_config_with_entry(config, entry(station_a)).await?;
-            assert!(entry_by_station_name(&config, station_a).is_some());
-            assert!(entry_by_station_name(&config, station_b).is_some());
-
+            for iteration in 0..3 {
+                eprintln!("iteration nr {iteration}");
+                for exp in expected.iter() {
+                    eprintln!("BEFORE\n{config:#?}");
+                    config = update_config_with_entry(config, entry(exp))?;
+                    eprintln!("AFTER\n{config:#?}");
+                    assert_eq!(
+                        expected
+                            .iter()
+                            .find(|entry| entry_by_station_name(&config, entry).is_none()),
+                        None
+                    );
+                }
+            }
             Ok(())
         }
 
@@ -410,7 +493,7 @@ pub mod handlers {
     ) -> Result<(), WireguardRestApiError> {
         let file_path = wireguard_cli.file_path.write().await;
         let config = read_config(file_path.as_path()).await?;
-        let config = update_config_with_entry(config, create).await?;
+        let config = update_config_with_entry(config, create)?;
         tokio::fs::write(file_path.as_path(), &config.to_string()).await?;
         wireguard_cli.wireguard_refresh().await?;
         Ok(())
